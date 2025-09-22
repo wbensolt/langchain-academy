@@ -34,12 +34,33 @@ def divide(a: int, b: int) -> float:
 tools = [add, multiply, divide]
 
 # Define LLM with bound tools
-llm = ChatOpenAI(model="gpt-4o")
+#llm = ChatOpenAI(model="gpt-4o")
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+import os
+
+# Charge les variables d'environnement depuis le fichier .env
+load_dotenv()
+
+# Récupère ta clé d'API Groq
+api_key = os.getenv("GROQ_API_KEY")
+
+# Initialisation du modèle ChatGroq avec ton modèle préféré
+llm = ChatGroq(
+    model="meta-llama/llama-4-scout-17b-16e-instruct",
+    temperature=0,
+    api_key=api_key
+)
 llm_with_tools = llm.bind_tools(tools)
 
 # System message
-sys_msg = SystemMessage(content="You are a helpful assistant tasked with writing performing arithmetic on a set of inputs.")
+sys_msg = SystemMessage(content="""
+You are a helpful assistant performing arithmetic operations.
 
+When calling tools, always pass parameters as integers, not strings.
+
+For example, call add with parameters: {"a": 8, "b": 5} (integers), NOT {"a": "8", "b": "5"} (strings).
+""")
 # Node
 def assistant(state: MessagesState):
    return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}

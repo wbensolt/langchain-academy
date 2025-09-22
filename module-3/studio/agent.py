@@ -4,37 +4,49 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import START, StateGraph, MessagesState
 from langgraph.prebuilt import tools_condition, ToolNode
 
-def add(a: int, b: int) -> int:
+def add(a: float, b: float) -> float:
     """Adds a and b.
 
     Args:
-        a: first int
-        b: second int
+        a: first float
+        b: second float
     """
     return a + b
 
-def multiply(a: int, b: int) -> int:
+def multiply(a, b) -> float:
     """Multiplies a and b.
-
-    Args:
-        a: first int
-        b: second int
     """
-    return a * b
+    return float(a) * float(b)
 
-def divide(a: int, b: int) -> float:
+def divide(a: float, b: float) -> float:
     """Adds a and b.
 
     Args:
-        a: first int
-        b: second int
+        a: first float
+        b: second float
     """
     return a / b
 
 tools = [add, multiply, divide]
 
 # Define LLM with bound tools
-llm = ChatOpenAI(model="gpt-4o")
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+import os
+
+# Charge les variables d'environnement depuis le fichier .env
+load_dotenv()
+
+# Récupère ta clé d'API Groq
+api_key = os.getenv("GROQ_API_KEY")
+
+# Initialisation du modèle ChatGroq avec ton modèle préféré
+llm = ChatGroq(
+    model="meta-llama/llama-4-scout-17b-16e-instruct",
+    temperature=0,
+    api_key=api_key
+)
+
 llm_with_tools = llm.bind_tools(tools)
 
 # System message
@@ -58,4 +70,4 @@ builder.add_conditional_edges(
 builder.add_edge("tools", "assistant")
 
 # Compile graph
-graph = builder.compile()
+graph = builder.compile(interrupt_before=["tools"])

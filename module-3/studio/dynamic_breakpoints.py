@@ -30,4 +30,9 @@ builder.add_edge("step_1", "step_2")
 builder.add_edge("step_2", "step_3")
 builder.add_edge("step_3", END)
 
+# from langgraph.checkpoint.memory import MemorySaver
+
+# memory = MemorySaver()
+# graph = builder.compile(checkpointer=memory)
+
 graph = builder.compile()

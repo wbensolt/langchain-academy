@@ -1,0 +1,25 @@
+{
+  "topic": "Intelligence Artificielle et Éthique",
+  "max_analysts": 2,
+  "human_analyst_feedback": null,
+  "analysts": [
+    {
+      "name": "Dr. Sarah Chen",
+      "role": "AI Ethics Researcher",
+      "affiliation": "Stanford University",
+      "description": "Expert en éthique de l'IA, se concentre sur les biais algorithmiques et la justice sociale dans les systèmes d'IA."
+    },
+    {
+      "name": "Prof. James Wilson",
+      "role": "Machine Learning Security Specialist",
+      "affiliation": "MIT",
+      "description": "Spécialiste de la sécurité des modèles de ML, étudie les vulnérabilités et les attaques adverses."
+    }
+  ],
+  "sections": [],
+  "introduction": "",
+  "content": "",
+  "conclusion": "",
+  "final_report": "",
+  "retry_count": 0
+}

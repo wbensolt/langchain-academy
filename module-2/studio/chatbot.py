@@ -4,8 +4,22 @@ from langgraph.graph import MessagesState
 from langgraph.graph import StateGraph, START, END
 
 # We will use this model for both the conversation and the summarization
-from langchain_openai import ChatOpenAI
-model = ChatOpenAI(model="gpt-4o", temperature=0) 
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+import os
+
+# Charge les variables d'environnement depuis le fichier .env
+load_dotenv()
+
+# Récupère ta clé d'API Groq
+api_key = os.getenv("GROQ_API_KEY")
+
+# Initialisation du modèle ChatGroq avec ton modèle préféré
+model = ChatGroq(
+    model="meta-llama/llama-4-scout-17b-16e-instruct",
+    temperature=0,
+    api_key=api_key
+)
 
 # State class to store messages and summary
 class State(MessagesState):

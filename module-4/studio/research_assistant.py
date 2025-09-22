@@ -1,4 +1,7 @@
+import json
 import operator
+import re
+from langchain_mistralai import ChatMistralAI
 from pydantic import BaseModel, Field
 from typing import Annotated, List
 from typing_extensions import TypedDict
@@ -9,11 +12,62 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, get_
 from langchain_openai import ChatOpenAI
 
 from langgraph.constants import Send
+# from langgraph.graph import Send
 from langgraph.graph import END, MessagesState, START, StateGraph
 
 ### LLM
 
-llm = ChatOpenAI(model="gpt-4o", temperature=0) 
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+import os
+
+# Charge les variables d'environnement depuis le fichier .env
+load_dotenv()
+
+# Récupère ta clé d'API Groq
+api_key = os.getenv("GROQ_API_KEY")
+api_key2 = os.getenv("GOOGLE_API_KEY")
+api_key3 = os.getenv("SK_API_KEY")
+
+# Initialisation du modèle ChatGroq avec ton modèle préféré
+# llm = ChatGroq(
+#     model="meta-llama/llama-4-scout-17b-16e-instruct",
+#     temperature=0,
+#     api_key=api_key
+# ) 
+llm = ChatGroq(
+    model="meta-llama/llama-4-scout-17b-16e-instruct",#llama-3.1-8b-instant",#
+    temperature=0,
+    api_key=api_key,
+    max_retries=5,           # Plus de retries
+    timeout=60.0,            # Timeout plus long
+    max_tokens=100,         # Limiter les tokens
+    request_timeout=30.0,    # Timeout de requête
+)
+
+def trace_node(func):
+    def wrapper(state, *args, **kwargs):
+        node_name = func.__name__
+        print(f"\n➡️ Entering node: {node_name}")
+        # Affiche les clés importantes de l'état
+        keys_to_show = ['analyst', 'analysts', 'completed_interviews', 'human_analyst_feedback']
+        for key in keys_to_show:
+            if key in state:
+                print(f"   {key}: {state[key]}")
+        result = func(state, *args, **kwargs)
+        print(f"✅ Exiting node: {node_name}\n")
+        return result
+    return wrapper
+
+# from langchain_mistralai import ChatMistralAI
+
+# mistral_key = os.getenv("MISTRAL_API_KEY")
+# llm = ChatMistralAI(
+#     model_name=os.getenv("MODEL_NAME", "mistral-small-latest"),
+#     temperature=0,
+#     timeout=180,
+#     # metadata={"component": "marketing_llm"},
+# )
 
 ### Schema 
 
@@ -44,6 +98,7 @@ class GenerateAnalystsState(TypedDict):
     max_analysts: int # Number of analysts
     human_analyst_feedback: str # Human feedback
     analysts: List[Analyst] # Analyst asking questions
+    next: str # Next step in the process
 
 class InterviewState(MessagesState):
     max_num_turns: int # Number turns of conversation
@@ -65,6 +120,9 @@ class ResearchGraphState(TypedDict):
     content: str # Content for the final report
     conclusion: str # Conclusion for the final report
     final_report: str # Final report
+    retry_count: int 
+    next: str # Next step in the process
+    # messages: List
 
 ### Nodes and edges
 
@@ -83,31 +141,248 @@ analyst_instructions="""You are tasked with creating a set of AI analyst persona
 
 5. Assign one analyst to each theme."""
 
-def create_analysts(state: GenerateAnalystsState):
+from groq import APIError
+from langchain.schema import SystemMessage
+
+# def create_analysts(state: GenerateAnalystsState):
+#     """Create analysts safely, prevent any tool calls."""
+
+#     topic = state['topic']
+#     max_analysts = state['max_analysts']
+#     human_analyst_feedback = state.get('human_analyst_feedback', '')
+
+#     structured_llm = llm.with_structured_output(Perspectives)
+
+#     system_message = analyst_instructions.format(
+#         topic=topic,
+#         human_analyst_feedback=human_analyst_feedback,
+#         max_analysts=max_analysts
+#     ) + "\nImportant: RETURN ONLY JSON. DO NOT CALL TOOLS. No HumanMessage."
+
+#     try:
+#         # Use only SystemMessage to reduce tool-calling behavior
+#         analysts = structured_llm.invoke([SystemMessage(content=system_message)])
+#         return {"analysts": analysts.analysts}
+
+#     except APIError as e:
+#         print(f"Groq APIError: {e}")
+#         return {"analysts": []}
+
+#     except Exception as e:
+#         print(f"Unexpected error generating analysts: {e}")
+#         return {"analysts": []}
+
+@trace_node
+def create_analysts(state: ResearchGraphState):
+    """Create analysts safely, prevent any tool calls."""
     
-    """ Create analysts """
+    topic = state['topic']
+    max_analysts = state['max_analysts']
+    human_analyst_feedback = state.get('human_analyst_feedback', '')
+    retry_count = state.get('retry_count', 0)
+
+    USE_MOCK_DATA = False
     
-    topic=state['topic']
-    max_analysts=state['max_analysts']
-    human_analyst_feedback=state.get('human_analyst_feedback', '')
+    if USE_MOCK_DATA:
+        print(f"📋 MODE TEST: Création d'analystes (tentative {retry_count + 1})")
         
-    # Enforce structured output
-    structured_llm = llm.with_structured_output(Perspectives)
-
-    # System message
-    system_message = analyst_instructions.format(topic=topic,
-                                                            human_analyst_feedback=human_analyst_feedback, 
-                                                            max_analysts=max_analysts)
-
-    # Generate question 
-    analysts = structured_llm.invoke([SystemMessage(content=system_message)]+[HumanMessage(content="Generate the set of analysts.")])
+        # Varier les analystes selon le retry_count pour tester le feedback
+        if retry_count == 0:
+            mock_analysts = [
+                Analyst(
+                    name="Dr. Sarah Chen",
+                    role="AI Ethics Researcher", 
+                    affiliation="Stanford University",
+                    description="Expert en éthique de l'IA, se concentre sur les biais algorithmiques."
+                ),
+                Analyst(
+                    name="Prof. James Wilson",
+                    role="Machine Learning Security Specialist",
+                    affiliation="MIT",
+                    description="Spécialiste de la sécurité des modèles de ML."
+                )
+            ]
+        else:
+            # Analystes différents pour les tentatives suivantes
+            mock_analysts = [
+                Analyst(
+                    name="Dr. Maria Rodriguez",
+                    role="AI Governance Expert",
+                    affiliation="Oxford University", 
+                    description="Experte en gouvernance et régulation de l'IA."
+                ),
+                Analyst(
+                    name="Dr. Kevin Liu",
+                    role="Algorithmic Fairness Researcher",
+                    affiliation="Berkeley",
+                    description="Recherche sur l'équité algorithmique et la discrimination."
+                )
+            ]
+        
+        return {"analysts": mock_analysts, "retry_count": retry_count + 1}
     
-    # Write the list of analysis to state
-    return {"analysts": analysts.analysts}
+    else:
+        # Mode réel avec LLM
+        try:
+            structured_llm = llm.with_structured_output(Perspectives)
+            system_message = analyst_instructions.format(
+                topic=topic,
+                human_analyst_feedback=human_analyst_feedback,
+                max_analysts=max_analysts
+            ) + "\nImportant: RETURN ONLY JSON. DO NOT CALL TOOLS."
 
-def human_feedback(state: GenerateAnalystsState):
-    """ No-op node that should be interrupted on """
-    pass
+            analysts = structured_llm.invoke([SystemMessage(content=system_message)])
+            print("💬 Réponse brute Mistral:", analysts)
+            return {"analysts": analysts.analysts, "retry_count": retry_count + 1}
+
+        except Exception as e:
+            print(f"❌ Erreur LLM: {e}")
+            return {"analysts": [], "retry_count": retry_count + 1}
+
+# @trace_node
+# def create_analysts(state: ResearchGraphState):
+#     """Create analysts safely, prevent any tool calls."""
+    
+#     topic = state['topic']
+#     max_analysts = state['max_analysts']
+#     human_analyst_feedback = state.get('human_analyst_feedback', '')
+#     retry_count = state.get('retry_count', 0)
+
+#     USE_MOCK_DATA = False
+    
+#     if USE_MOCK_DATA:
+#         print(f"📋 MODE TEST: Création d'analystes (tentative {retry_count + 1})")
+#         # Mock data existante
+#         mock_analysts = [
+#             Analyst(
+#                 name="Dr. Sarah Chen",
+#                 role="AI Ethics Researcher", 
+#                 affiliation="Stanford University",
+#                 description="Expert en éthique de l'IA, se concentre sur les biais algorithmiques."
+#             ),
+#             Analyst(
+#                 name="Prof. James Wilson",
+#                 role="Machine Learning Security Specialist",
+#                 affiliation="MIT",
+#                 description="Spécialiste de la sécurité des modèles de ML."
+#             )
+#         ]
+#         return {"analysts": mock_analysts, "retry_count": retry_count + 1}
+    
+#     else:
+#         system_message = analyst_instructions.format(
+#             topic=topic,
+#             human_analyst_feedback=human_analyst_feedback,
+#             max_analysts=max_analysts
+#         ) + (
+#             "\n⚠️ Very important:\n"
+#             "Return ONLY valid JSON following this schema exactly:\n"
+#             "{\n"
+#             '  "analysts": [\n'
+#             '    {\n'
+#             '      "name": "string",\n'
+#             '      "theme": "string",\n'
+#             '      "expertise": "string",\n'
+#             '      "background": "string",\n'
+#             '      "approach": "string"\n'
+#             '    }\n'
+#             '  ]\n'
+#             "}\n"
+#             "Do NOT add any extra text, explanation, or comments."
+#         )
+
+#         structured_llm = llm.with_structured_output(Perspectives)
+#         response = structured_llm.invoke([SystemMessage(content=system_message)])
+
+#         if response is None:
+#             print("⚠️ Mistral n'a pas renvoyé de JSON structuré. Peut-être problème de prompt.")
+#             return {"analysts": [], "retry_count": retry_count + 1}
+
+#         return {"analysts": response.analysts, "retry_count": retry_count + 1}
+
+@trace_node
+def human_feedback(state: ResearchGraphState):
+    feedback = (state.get("human_analyst_feedback") or "").strip().lower()
+
+    if feedback == "approve":
+        print("DEBUG human_feedback: Approbation -> launch_interviews")
+        return {"next": "launch_interviews"}  # ⚡ retour partiel
+    else:
+        print("DEBUG human_feedback: Refus -> create_analysts + reset feedback")
+        return {
+            "next": "create_analysts",
+            "human_analyst_feedback": None
+        }
+
+@trace_node
+def route_after_feedback(state: ResearchGraphState):
+    next_step = state.get("next")
+    if next_step:
+        print(f"DEBUG route_after_feedback: direction = {next_step}")
+        return next_step
+    print("DEBUG route_after_feedback: aucun 'next' trouvé -> défaut create_analysts")
+    return "create_analysts"
+
+@trace_node
+def launch_interviews(state: dict):
+    """
+    Nœud qui initialise et lance les interviews.
+    """
+    analysts = state.get("analysts", [])
+    topic = state.get("topic", "")
+
+    if not analysts:
+        # Aucun analyste restant, fin des interviews
+        return {"next_step": "all_interviews_done"}
+
+    # Prendre le premier analyste
+    analyst = analysts.pop(0)
+    state["analysts"] = analysts  # mettre à jour la liste
+    state["analyst"] = analyst     # mettre analyst dans l'état local pour le prochain nœud
+
+    # Envoyer le nœud conduct_interview avec le topic seulement (analyst déjà dans l'état)
+    return {
+        "next_send": Send(
+            node="conduct_interview",
+            arg={"topic": topic}
+        ),
+        "state": state
+    }
+
+
+
+
+
+# def check_approval(state: ResearchGraphState):
+#     """Nœud séparé pour vérifier l'approbation APRÈS l'interruption"""
+#     human_feedback = state.get("human_analyst_feedback", "").strip().lower()
+#     analysts = state.get("analysts", [])
+    
+#     print(f"DEBUG: Checking approval - feedback='{human_feedback}'")
+    
+#     if not analysts:
+#         return {"next": "create_analysts"}
+    
+#     if human_feedback == "approve":
+#         return {"next": "launch_interviews"}
+#     else:
+#         return {"next": "create_analysts"}
+
+# def route_after_approval(state: ResearchGraphState):
+#     """Router basé sur la décision de check_approval"""
+#     return state["next"]
+
+# def launch_interviews(state: ResearchGraphState):
+#     """Nœud dédié au lancement des interviews"""
+#     analysts = state["analysts"]
+#     topic = state["topic"]
+    
+#     print(f"Launching {len(analysts)} interviews")
+#     return [Send("conduct_interview", {
+#         "analyst": analyst,
+#         "messages": [HumanMessage(content=f"Research topic: {topic}")],
+#         "max_num_turns": 2
+#     }) for analyst in analysts]
 
 # Generate analyst question
 question_instructions = """You are an analyst tasked with interviewing an expert to learn about a specific topic. 
@@ -128,21 +403,36 @@ When you are satisfied with your understanding, complete the interview with: "Th
 
 Remember to stay in character throughout your response, reflecting the persona and goals provided to you."""
 
-def generate_question(state: InterviewState):
+@trace_node
+def ask_question(state: dict, topic: str):
+    """
+    Nœud qui génère et envoie une question à l'analyste.
+    """
+    analyst = state.get("analyst")
+    if not analyst:
+        raise ValueError("Missing 'analyst' in local state for this interview")
 
-    """ Node to generate a question """
+    # Exemple de génération de question
+    question = f"Dear {analyst.name}, what are your thoughts on {topic}?"
 
-    # Get state
-    analyst = state["analyst"]
-    messages = state["messages"]
+    # Ajouter la question à l’interview
+    state["interview"].append({"question": question})
 
-    # Generate question 
-    system_message = question_instructions.format(goals=analyst.persona)
-    question = llm.invoke([SystemMessage(content=system_message)]+messages)
-        
-    # Write messages to state
-    return {"messages": [question]}
-
+    # Ici, tu peux décider si tu veux continuer les tours ou passer au prochain analyste
+    max_turns = 2
+    if len(state["interview"]) >= max_turns:
+        # Interview terminée, lancer la suivante
+        return launch_interviews(state)
+    else:
+        # Continuer l'interview avec une autre question
+        return {
+            "next_send": Send(
+                node="ask_question",
+                arg={"topic": topic}
+            ),
+            "state": state
+        }
+    
 # Search query writing
 search_instructions = SystemMessage(content=f"""You will be given a conversation between an analyst and an expert. 
 
@@ -154,51 +444,81 @@ Pay particular attention to the final question posed by the analyst.
 
 Convert this final question into a well-structured web search query""")
 
+@trace_node
 def search_web(state: InterviewState):
-    
-    """ Retrieve docs from web search """
+    """Retrieve docs from web search with robust structured output handling."""
+    from langchain_core.messages import get_buffer_string
+    from groq import APIError
+    from langchain_community.tools.tavily_search import TavilySearchResults
 
-    # Search
+    # Convert messages list to simple text
+    conversation_text = get_buffer_string(state['messages'])
+
+    # Prepare structured LLM
+    structured_llm = llm.with_structured_output(SearchQuery)
+
+    # Prepare system + human messages
+    prompt_messages = [
+        SystemMessage(content=str(search_instructions.content)),
+        HumanMessage(content=conversation_text)
+    ]
+
+    try:
+        # Invoke LLM with structured output
+        search_query = structured_llm.invoke(prompt_messages)
+    except APIError as e:
+        print("Groq structured output failed:", e)
+        if hasattr(e, "failed_generation"):
+            print("Failed generation details:", e.failed_generation)
+        # Fallback: empty search query
+        search_query = SearchQuery(search_query="")
+
+    # Perform web search with Tavily
     tavily_search = TavilySearchResults(max_results=3)
+    search_docs = tavily_search.invoke(search_query.search_query or "")
 
-    # Search query
-    structured_llm = llm.with_structured_output(SearchQuery)
-    search_query = structured_llm.invoke([search_instructions]+state['messages'])
-    
-    # Search
-    search_docs = tavily_search.invoke(search_query.search_query)
+    # Inspect what search_docs contient
+    # print(search_docs)
 
-     # Format
+    # Formatte correctement les documents
     formatted_search_docs = "\n\n---\n\n".join(
         [
-            f'<Document href="{doc["url"]}"/>\n{doc["content"]}\n</Document>'
+            f'<Document href="{getattr(doc, "url", "")}"/>\n{getattr(doc, "content", str(doc))}\n</Document>'
             for doc in search_docs
         ]
     )
 
-    return {"context": [formatted_search_docs]} 
+    return {"context": [formatted_search_docs]}
 
+@trace_node
 def search_wikipedia(state: InterviewState):
-    
-    """ Retrieve docs from wikipedia """
+    from langchain_core.messages import get_buffer_string
+    from groq import APIError
 
-    # Search query
+    conversation_text = get_buffer_string(state['messages'])
     structured_llm = llm.with_structured_output(SearchQuery)
-    search_query = structured_llm.invoke([search_instructions]+state['messages'])
-    
-    # Search
-    search_docs = WikipediaLoader(query=search_query.search_query, 
-                                  load_max_docs=2).load()
+    prompt = [SystemMessage(content=str(search_instructions.content)),
+              HumanMessage(content=conversation_text)]
 
-     # Format
-    formatted_search_docs = "\n\n---\n\n".join(
-        [
-            f'<Document source="{doc.metadata["source"]}" page="{doc.metadata.get("page", "")}"/>\n{doc.page_content}\n</Document>'
-            for doc in search_docs
-        ]
+    try:
+        search_query = structured_llm.invoke(prompt)
+    except APIError as e:
+        print("⚠️ Groq structured output failed:", e)
+        search_query = SearchQuery(search_query="")
+
+    q = (search_query.search_query or "").strip() or state["analyst"].description
+    docs = WikipediaLoader(query=q, load_max_docs=2).load()
+
+    if not docs:
+        return {"context": [f"<Document>No results for {q}</Document>"]}
+
+    formatted = "\n\n---\n\n".join(
+        f'<Document source="{d.metadata.get("source","")}" page="{d.metadata.get("page","")}"/>\n{d.page_content}\n</Document>'
+        for d in docs
     )
+    return {"context": [formatted]}
 
-    return {"context": [formatted_search_docs]} 
+
 
 # Generate expert answer
 answer_instructions = """You are an expert being interviewed by an analyst.
@@ -229,25 +549,51 @@ When answering questions, follow these guidelines:
         
 And skip the addition of the brackets as well as the Document source preamble in your citation."""
 
-def generate_answer(state: InterviewState):
+# @trace_node
+# def generate_answer_(state: InterviewState):
     
-    """ Node to answer a question """
+#     """ Node to answer a question """
 
-    # Get state
-    analyst = state["analyst"]
-    messages = state["messages"]
-    context = state["context"]
+#     # Get state
+#     analyst = state.get("analyst")
+#     if not analyst:
+#         raise ValueError("Missing 'analyst' in local state for this interview")
+#     messages = state["messages"]
+#     context = state["context"]
 
-    # Answer question
-    system_message = answer_instructions.format(goals=analyst.persona, context=context)
-    answer = llm.invoke([SystemMessage(content=system_message)]+messages)
+#     # Answer question
+#     system_message = answer_instructions.format(goals=analyst.persona, context=context)
+#     answer = llm.invoke([SystemMessage(content=system_message)]+messages)
             
-    # Name the message as coming from the expert
+#     # Name the message as coming from the expert
+#     answer.name = "expert"
+    
+#     # Append it to state
+#     return {"messages": [answer]}
+
+@trace_node
+def generate_answer(state: InterviewState):
+    """Node to answer a question safely for Mistral (no assistant last message)"""
+    
+    analyst = state.get("analyst")
+    if not analyst:
+        raise ValueError("Missing 'analyst' in local state for this interview")
+    
+    # Filtrer uniquement les HumanMessage
+    human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    
+    # Préparer le message système
+    system_message = answer_instructions.format(goals=analyst.persona, context=state["context"])
+    
+    # Appel au LLM
+    answer = llm.invoke([SystemMessage(content=system_message)] + human_messages)
+    
+    # Nommer le message comme venant de l'expert
     answer.name = "expert"
     
-    # Append it to state
     return {"messages": [answer]}
 
+@trace_node
 def save_interview(state: InterviewState):
     
     """ Save interviews """
@@ -261,6 +607,7 @@ def save_interview(state: InterviewState):
     # Save to interviews key
     return {"interview": interview}
 
+@trace_node
 def route_messages(state: InterviewState, 
                    name: str = "expert"):
 
@@ -339,6 +686,7 @@ There should be no redundant sources. It should simply be:
 - Include no preamble before the title of the report
 - Check that all guidelines have been followed"""
 
+@trace_node
 def write_section(state: InterviewState):
 
     """ Node to write a section """
@@ -346,7 +694,9 @@ def write_section(state: InterviewState):
     # Get state
     interview = state["interview"]
     context = state["context"]
-    analyst = state["analyst"]
+    analyst = state.get("analyst")
+    if not analyst:
+        raise ValueError("Missing 'analyst' in local state for this interview")
    
     # Write section using either the gathered source docs from interview (context) or the interview itself (interview)
     system_message = section_writer_instructions.format(focus=analyst.description)
@@ -355,6 +705,53 @@ def write_section(state: InterviewState):
     # Append it to state
     return {"sections": [section.content]}
 
+# @trace_node
+# def generate_question_(state: InterviewState):
+#     """Node to generate a question with debug info"""
+    
+#     print(f"DEBUG generate_question: state keys = {list(state.keys())}")
+#     print(f"DEBUG generate_question: analyst in state = {'analyst' in state}")
+    
+#     if "analyst" not in state:
+#         print("❌ ERROR: 'analyst' key missing in InterviewState")
+#         print(f"State content: {state}")
+#         raise ValueError("Missing 'analyst' in InterviewState. Check how Send() is configured.")
+    
+#     analyst = state["analyst"]
+#     messages = state.get("messages", [])
+    
+#     # Generate question 
+#     system_message = question_instructions.format(goals=analyst.persona)
+#     question = llm.invoke([SystemMessage(content=system_message)] + messages)
+        
+#     return {"messages": [question]}
+
+@trace_node
+def generate_question(state: InterviewState):
+    """Node to generate a question safely for Mistral"""
+    
+    if "analyst" not in state:
+        raise ValueError("Missing 'analyst' in InterviewState")
+    
+    analyst = state["analyst"]
+    
+    # Filtrer uniquement les HumanMessage
+    human_messages = [m for m in state.get("messages", []) if isinstance(m, HumanMessage)]
+    
+    # Préparer le message système
+    system_message = question_instructions.format(goals=analyst.persona)
+    
+    question = llm.invoke([SystemMessage(content=system_message)] + human_messages)
+    
+    return {"messages": [question]}
+
+@trace_node
+def continue_interviews(state: dict):
+    """
+    Après avoir sauvegardé une interview, retourne vers launch_interviews
+    pour le prochain analyst ou finit si tous terminés.
+    """
+    return launch_interviews(state)
 # Add nodes and edges 
 interview_builder = StateGraph(InterviewState)
 interview_builder.add_node("ask_question", generate_question)
@@ -374,26 +771,113 @@ interview_builder.add_conditional_edges("answer_question", route_messages,['ask_
 interview_builder.add_edge("save_interview", "write_section")
 interview_builder.add_edge("write_section", END)
 
+# def initiate_all_interviews(state: ResearchGraphState):
+
+#     """ Conditional edge to initiate all interviews via Send() API or return to create_analysts """    
+
+#     # Check if human feedback
+#     human_analyst_feedback=state.get('human_analyst_feedback','approve')
+#     if human_analyst_feedback.lower() != 'approve':
+#         # Return to create_analysts
+#         return "create_analysts"
+
+#     # Otherwise kick off interviews in parallel via Send() API
+#     else:
+#         topic = state["topic"]
+#         return [Send("conduct_interview", {"analyst": analyst,
+#                                            "messages": [HumanMessage(
+#                                                content=f"So you said you were writing an article on {topic}?"
+#                                            )
+#                                                        ]}) for analyst in state["analysts"]]
+
+# 
+
+# 
+@trace_node
+def conduct_interview_(state: ResearchGraphState):
+    """Nœud qui gère UN SEUL interview à la fois"""
+    analysts = state.get("analysts", [])
+    completed_interviews = state.get("completed_interviews", 0)
+    
+    if completed_interviews >= len(analysts):
+        # Tous les interviews sont terminés
+        return "write_report"
+    
+    # Get current analyst
+    current_analyst = analysts[completed_interviews]
+    
+    # Préparer l'état pour le sous-graphe d'interview
+    interview_state = {
+        "analyst": current_analyst,
+        "messages": [HumanMessage(content=f"Research topic: {state['topic']}")],
+        "max_num_turns": 2,
+        "context": [],
+        "interview": "",
+        "sections": []
+    }
+    
+    # Compiler le résultat du sous-graphe
+    interview_result = interview_builder.compile().invoke(interview_state)
+    
+    # Ajouter la section au rapport principal
+    new_sections = state.get("sections", []) + interview_result.get("sections", [])
+    
+    # Marquer cet interview comme terminé
+    return {
+        "sections": new_sections,
+        "completed_interviews": completed_interviews + 1
+    }
+
+@trace_node
+def conduct_interview(state: ResearchGraphState):
+    """Nœud qui gère UN SEUL interview à la fois"""
+    analysts = state.get("analysts", [])
+    completed_interviews = state.get("completed_interviews", 0)
+    
+    if completed_interviews >= len(analysts):
+        # Tous les interviews sont terminés
+        return "write_report"
+    
+    # Analyste actuel
+    current_analyst = analysts[completed_interviews]
+    
+    # Préparer l'état pour le sous-graphe d'interview
+    interview_state = {
+        "analyst": current_analyst,
+        "messages": [HumanMessage(content=f"Research topic: {state['topic']}")],
+        "max_num_turns": 2,
+        "context": [],
+        "interview": "",
+        "sections": []
+    }
+    
+    # Lancer le sous-graphe d'interview (ask_question → save_interview → write_section)
+    interview_result = interview_builder.compile().invoke(interview_state)
+    
+    # Ajouter la section au rapport principal
+    new_sections = state.get("sections", []) + interview_result.get("sections", [])
+    
+    # Mettre à jour le compteur pour passer au prochain analyste
+    return {
+        "sections": new_sections,
+        "completed_interviews": completed_interviews + 1
+    }
+
+@trace_node
 def initiate_all_interviews(state: ResearchGraphState):
-
-    """ Conditional edge to initiate all interviews via Send() API or return to create_analysts """    
-
-    # Check if human feedback
-    human_analyst_feedback=state.get('human_analyst_feedback','approve')
-    if human_analyst_feedback.lower() != 'approve':
-        # Return to create_analysts
+    """Fonction conditionnelle qui décide simplement du prochain nœud"""
+    
+    feedback = (state.get("human_analyst_feedback") or "").strip().lower()
+    analysts = state.get("analysts", [])
+    
+    print(f"DEBUG: Feedback = '{feedback}', Analysts count = {len(analysts)}")
+    
+    if not analysts or feedback != "approve":
         return "create_analysts"
-
-    # Otherwise kick off interviews in parallel via Send() API
     else:
-        topic = state["topic"]
-        return [Send("conduct_interview", {"analyst": analyst,
-                                           "messages": [HumanMessage(
-                                               content=f"So you said you were writing an article on {topic}?"
-                                           )
-                                                       ]}) for analyst in state["analysts"]]
+        return "conduct_interview"
 
-# Write a report based on the interviews
+    
 report_writer_instructions = """You are a technical writer creating a report on this overall topic: 
 
 {topic}
@@ -428,10 +912,8 @@ Here are the memos from your analysts to build your report from:
 
 {context}"""
 
+@trace_node
 def write_report(state: ResearchGraphState):
-
-    """ Node to write the final report body """
-
     # Full set of sections
     sections = state["sections"]
     topic = state["topic"]
@@ -444,7 +926,6 @@ def write_report(state: ResearchGraphState):
     report = llm.invoke([SystemMessage(content=system_message)]+[HumanMessage(content=f"Write a report based upon these memos.")]) 
     return {"content": report.content}
 
-# Write the introduction or conclusion
 intro_conclusion_instructions = """You are a technical writer finishing a report on {topic}
 
 You will be given all of the sections of the report.
@@ -467,10 +948,8 @@ For your conclusion, use ## Conclusion as the section header.
 
 Here are the sections to reflect on for writing: {formatted_str_sections}"""
 
+@trace_node
 def write_introduction(state: ResearchGraphState):
-
-    """ Node to write the introduction """
-
     # Full set of sections
     sections = state["sections"]
     topic = state["topic"]
@@ -484,10 +963,8 @@ def write_introduction(state: ResearchGraphState):
     intro = llm.invoke([instructions]+[HumanMessage(content=f"Write the report introduction")]) 
     return {"introduction": intro.content}
 
+@trace_node
 def write_conclusion(state: ResearchGraphState):
-
-    """ Node to write the conclusion """
-
     # Full set of sections
     sections = state["sections"]
     topic = state["topic"]
@@ -501,10 +978,9 @@ def write_conclusion(state: ResearchGraphState):
     conclusion = llm.invoke([instructions]+[HumanMessage(content=f"Write the report conclusion")]) 
     return {"conclusion": conclusion.content}
 
+@trace_node
 def finalize_report(state: ResearchGraphState):
-
     """ The is the "reduce" step where we gather all the sections, combine them, and reflect on them to write the intro/conclusion """
-
     # Save full final report
     content = state["content"]
     if content.startswith("## Insights"):
@@ -526,7 +1002,9 @@ def finalize_report(state: ResearchGraphState):
 builder = StateGraph(ResearchGraphState)
 builder.add_node("create_analysts", create_analysts)
 builder.add_node("human_feedback", human_feedback)
-builder.add_node("conduct_interview", interview_builder.compile())
+builder.add_node("launch_interviews", launch_interviews)
+builder.add_node("continue_interviews", continue_interviews)
+builder.add_node("conduct_interview", conduct_interview)
 builder.add_node("write_report",write_report)
 builder.add_node("write_introduction",write_introduction)
 builder.add_node("write_conclusion",write_conclusion)
@@ -535,12 +1013,30 @@ builder.add_node("finalize_report",finalize_report)
 # Logic
 builder.add_edge(START, "create_analysts")
 builder.add_edge("create_analysts", "human_feedback")
-builder.add_conditional_edges("human_feedback", initiate_all_interviews, ["create_analysts", "conduct_interview"])
-builder.add_edge("conduct_interview", "write_report")
-builder.add_edge("conduct_interview", "write_introduction")
-builder.add_edge("conduct_interview", "write_conclusion")
-builder.add_edge(["write_conclusion", "write_report", "write_introduction"], "finalize_report")
+builder.add_conditional_edges("human_feedback", initiate_all_interviews, 
+                             ["create_analysts", "conduct_interview"])
+builder.add_conditional_edges(
+    "conduct_interview",
+    lambda state: "conduct_interview" if state.get("completed_interviews", 0) < len(state.get("analysts", [])) else "write_report",
+    ["conduct_interview", "write_report"]
+)
+builder.add_edge("write_report", "write_introduction")
+builder.add_edge("write_report", "write_conclusion")
+builder.add_edge(["write_introduction", "write_conclusion"], "finalize_report")
 builder.add_edge("finalize_report", END)
 
 # Compile
-graph = builder.compile(interrupt_before=['human_feedback'])
+# Compiler avec interruption
+# graph = builder.compile(interrupt_before=['human_feedback'])
+
+from langgraph.checkpoint.memory import MemorySaver
+
+# Crée un checkpointer
+# checkpointer = MemorySaver()
+
+# Compile ton graph AVEC checkpointer
+graph = builder.compile(
+    interrupt_before=['human_feedback'],
+    # checkpointer=checkpointer
+)
+

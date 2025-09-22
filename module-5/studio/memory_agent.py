@@ -125,8 +125,18 @@ class UpdateMemory(TypedDict):
     update_type: Literal['user', 'todo', 'instructions']
 
 # Initialize the model
-model = ChatOpenAI(model="gpt-4o", temperature=0)
+#model = ChatOpenAI(model="gpt-4o", temperature=0)
+from langchain_groq import ChatGroq
+from dotenv import load_dotenv
+import os
 
+# Initialisation du modèle
+load_dotenv()
+model = ChatGroq(
+    model="meta-llama/llama-4-scout-17b-16e-instruct",
+    temperature=0,
+    api_key=os.getenv("GROQ_API_KEY")
+)
 ## Create the Trustcall extractors for updating the user profile and ToDo list
 profile_extractor = create_extractor(
     model,

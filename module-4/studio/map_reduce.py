@@ -12,17 +12,47 @@ from langgraph.graph import END, StateGraph, START
 # Prompts we will use
 subjects_prompt = """Generate a list of 3 sub-topics that are all related to this overall topic: {topic}."""
 joke_prompt = """Generate a joke about {subject}"""
-best_joke_prompt = """Below are a bunch of jokes about {topic}. Select the best one! Return the ID of the best one, starting 0 as the ID for the first joke. Jokes: \n\n  {jokes}"""
+#best_joke_prompt = """Below are a bunch of jokes about {topic}. Select the best one! Return the ID of the best one, starting 0 as the ID for the first joke. Jokes: \n\n  {jokes}"""
 
-# LLM
-model = ChatOpenAI(model="gpt-4o", temperature=0) 
+best_joke_prompt = """Below are a bunch of jokes about {topic}.
+Select the best one! Return ONLY a JSON object with an integer field `id`.
+The ID must be an integer (0, 1, 2, ...) corresponding to the best joke.
+Jokes:
+
+{jokes}"""
+
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+import os
+
+# Charge les variables d'environnement depuis le fichier .env
+load_dotenv()
+
+# Récupère ta clé d'API Groq
+api_key = os.getenv("GROQ_API_KEY")
+
+# Initialisation du modèle ChatGroq avec ton modèle préféré
+model = ChatGroq(
+    model="meta-llama/llama-4-scout-17b-16e-instruct",
+    temperature=0,
+    api_key=api_key
+)
 
 # Define the state
 class Subjects(BaseModel):
     subjects: list[str]
 
+
+from typing import Union
+from pydantic import BaseModel, field_validator
+
 class BestJoke(BaseModel):
-    id: int
+    id: Union[int, str]
+
+    @field_validator("id", mode="before")
+    def convert_str_to_int(cls, v):
+        # Forcer en int quoi qu’il arrive
+        return int(v)
     
 class OverallState(TypedDict):
     topic: str

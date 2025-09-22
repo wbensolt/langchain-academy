@@ -13,7 +13,19 @@ from langgraph.store.base import BaseStore
 import configuration
 
 # Initialize the LLM
-model = ChatOpenAI(model="gpt-4o", temperature=0) 
+#model = ChatOpenAI(model="gpt-4o", temperature=0) 
+
+from langchain_groq import ChatGroq
+from dotenv import load_dotenv
+import os
+
+# Initialisation du modèle
+load_dotenv()
+model = ChatGroq(
+    model="meta-llama/llama-4-scout-17b-16e-instruct",
+    temperature=0,
+    api_key=os.getenv("GROQ_API_KEY")
+)
 
 # Memory schema
 class Memory(BaseModel):
