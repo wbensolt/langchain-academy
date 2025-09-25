@@ -1,3 +1,8 @@
+module-3/edit-state-human-feedback.ipynb
+.env
+*.ipynb_checkpoints/
+__pycache__/
+
 .ipynb_checkpoints/
 
 .idea/
