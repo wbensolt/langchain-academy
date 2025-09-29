@@ -41,7 +41,7 @@ llm = ChatGroq(
     api_key=api_key,
     max_retries=5,           # Plus de retries
     timeout=60.0,            # Timeout plus long
-    max_tokens=100,         # Limiter les tokens
+    max_tokens=1000,         # Limiter les tokens
     request_timeout=30.0,    # Timeout de requête
 )
 
